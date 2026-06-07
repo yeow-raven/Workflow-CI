@@ -1,0 +1,90 @@
+name: MLflow CI Pipeline
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'MLProject/**'
+  workflow_dispatch:
+    inputs:
+      n_estimators:
+        description: 'Number of estimators'
+        required: false
+        default: '200'
+      max_depth:
+        description: 'Max depth'
+        required: false
+        default: '10'
+
+jobs:
+  train-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.7'
+
+      - name: Install MLflow and dependencies
+        run: |
+          pip install mlflow==2.19.0 pandas scikit-learn matplotlib numpy
+
+      - name: Run MLflow Project
+        run: |
+          mlflow run MLProject \
+            -P n_estimators=${{ github.event.inputs.n_estimators || '200' }} \
+            -P max_depth=${{ github.event.inputs.max_depth || '10' }} \
+            --env-manager=local
+        env:
+          MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
+          MLFLOW_TRACKING_USERNAME: ${{ secrets.MLFLOW_TRACKING_USERNAME }}
+          MLFLOW_TRACKING_PASSWORD: ${{ secrets.MLFLOW_TRACKING_PASSWORD }}
+
+      - name: Collect MLflow artifacts
+        run: |
+          mkdir -p ci_artifacts
+          cp -r mlruns ci_artifacts/ 2>/dev/null || true
+          cp -r artifacts_tmp ci_artifacts/ 2>/dev/null || true
+
+      - name: Upload artifacts to GitHub
+        uses: actions/upload-artifact@v4
+        with:
+          name: mlflow-artifacts-${{ github.run_number }}
+          path: ci_artifacts/
+          retention-days: 30
+
+      - name: Commit mlruns to repository
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add mlruns/ artifacts_tmp/ || true
+          git diff --cached --quiet || git commit -m "ci: update mlruns artifacts [run #${{ github.run_number }}] [skip ci]"
+          git push || true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build Docker Image with MLflow
+        run: |
+          mlflow models build-docker \
+            -m "mlruns/0/$(ls mlruns/0 | grep -v meta | head -1)/artifacts/model" \
+            -n "${{ secrets.DOCKERHUB_USERNAME }}/telco-churn-model:latest" \
+            --enable-mlserver
+        continue-on-error: true
+
+      - name: Push Docker Image to Docker Hub
+        run: |
+          docker push ${{ secrets.DOCKERHUB_USERNAME }}/telco-churn-model:latest
+        continue-on-error: true
