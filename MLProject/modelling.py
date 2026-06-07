@@ -37,9 +37,7 @@ X_train, X_test, y_train, y_test = train_test_split(
 print(f"Train: {X_train.shape} | Test: {X_test.shape}")
 
 # ─── MLflow ───────────────────────────────────────────────────────────────────
-mlflow.set_experiment("Telco-Churn-CI")
-
-with mlflow.start_run():
+with mlflow.start_run(run_id=os.environ.get("MLFLOW_RUN_ID")):
     model = RandomForestClassifier(
         n_estimators=args.n_estimators,
         max_depth=args.max_depth,
